@@ -1,3 +1,5 @@
+#include <Adafruit_Sensor.h>
+
 #ifndef __HUM_SENSOR__
 #define __HUM_SENSOR__
 

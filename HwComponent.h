@@ -1,3 +1,6 @@
+#include <DHT.h>
+#include <DHT_U.h>
+
 #ifndef __HW_COMPONENT__
 #define __HW_COMPONENT__
 
