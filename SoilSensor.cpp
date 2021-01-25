@@ -1,7 +1,7 @@
 #include <Arduino.h>
 #include "SoilSensor.h"
 
-#define WET_VALUE 235
+#define WET_VALUE 280
 #define DRY_VALUE 540
 
 //constructor: selected_pin(pin number where component is wired)
