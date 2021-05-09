@@ -1,46 +1,18 @@
-/* LCD wiring:
-VSS -> GND
-VDD -> +5v                
-V0 -> Arduino D3
-RS -> Arduino D12
-R/W -> GND
-E -> Arduino D11
-D0 -> N/C
-D1 -> N/C
-D2 -> N/C
-D3 -> N/C
-D4 -> Arduino D2
-D5 -> Arduino D3
-D6 -> Arduino D4
-D7 -> Arduino D5
-A -> Arduino A0
-K -> GND
-*/
-#include <LiquidCrystal.h>;
-
-#define DELTA_DELAY 60000 //60 seconds delay
-#define BOUNCING_DELAY 700
+#define ONE_MINUTE 60000 //60 seconds delay
+#define BOUNCING_DELAY 1000
 
 //BUTTTONS PINS
 #define STATE_BUTTON 2
 
 // SENSORS PINS
 #define DHT22_PIN 13
-#define WATER_PUMP_PIN 8
+#define WATER_PUMP_PIN 7
 #define STRIP_LED_PIN 9
-#define CS_MOISTURE_PIN A1
+#define CS_MOISTURE_PIN A3
 
 //LCD PINS
-#define V0_LCD 3
-#define D4_LCD 4
-#define D5_LCD 5
-#define D6_LCD 6
-#define D7_LCD 7
-#define RS_LCD 12
-#define E_LCD 11
 #define A_LCD A0
 
-//VALUES
 #define ERROR_IN_SENSOR -999
 #define WATER_NEEDED_HUM 33
 #define MAX_TEMP 30
@@ -49,25 +21,29 @@ K -> GND
 #define MIN_HUM 40
 
 //TIME VALUES
-#define WATER_CHECK_MILLIS 18000000 // 5 hours
-
-#define VEGETATIVE_DAY 720000000  //20 hours
-#define VEGETATIVE_NIGHT 4400000  //4 hours
+#define WATER_CHECK_MILLIS 3600000 // 1 hour
+#define PWM_CONTRAST 85
+#define VEGETATIVE_DAY 57600000  // 16 hours
+#define VEGETATIVE_NIGHT 28800000  // 8 hours
 
 #define FLOWERING_DAY 43200000  //12 hours
 #define FLOWERING_NIGHT 43200000  //12 hours
 
-#define PWM_CONTRAST 85
+//VALUES
+#define WET_VALUE 610
+#define DRY_VALUE 860
 
 #define DHTTYPE DHT22
 
+#include <Wire.h> 
+#include <LiquidCrystal_I2C.h>
+#include <DS1307RTC.h>
 #include <DHT.h>
 #include "SoilSensor.h"
 #include "WaterPump.h"
 #include "DigitalLed.h"
 
-
-LiquidCrystal lcd(RS_LCD, E_LCD, D4_LCD, D5_LCD, D6_LCD, D7_LCD);
+LiquidCrystal_I2C lcd(0x27, 2, 1, 0, 4, 5, 6, 7, 3, POSITIVE);
 DHT dht(DHT22_PIN, DHTTYPE);
 SoilSensor* soil_sensor = new SoilSensor(CS_MOISTURE_PIN);
 WaterPump* water_pump = new WaterPump(WATER_PUMP_PIN);
@@ -90,20 +66,26 @@ unsigned long last_check_water_millis = 0;
 //Used to check light once in a while
 unsigned long last_check_light_millis = 0;
 
+unsigned int last_check_light_millis_diff = 0;
+unsigned long int last_check_light_minutes= 0;
+unsigned long int last_time_day = 0;
+unsigned long int last_time_night = 0;
+
+short int day_minutes = (actual_day_time / 60000) % 60;
+short int day_hours = (actual_day_time / 60000) /60;
+short int night_minutes = (actual_night_time / 60000) % 60;
+short int night_hours = (actual_night_time / 60000) /60;
 
 void setup()
 {
   Serial.begin(9600);
+  lcd.begin(20,4); 
   dht.begin();
   water_pump -> init();
-  attachInterrupt(digitalPinToInterrupt(STATE_BUTTON), set_light_state, FALLING);
+  attachInterrupt(digitalPinToInterrupt(STATE_BUTTON), change_light, FALLING);
   pinMode(STATE_BUTTON, INPUT);
   pinMode(WATER_PUMP_PIN, OUTPUT);
   pinMode(STRIP_LED_PIN, OUTPUT);
-  pinMode(A_LCD, OUTPUT);
-  digitalWrite(A_LCD, HIGH);
-  analogWrite(V0_LCD, PWM_CONTRAST);
-  lcd.begin(16, 2);
 }
 
 /**
@@ -115,10 +97,10 @@ void loop()
   temp= dht.readTemperature();
   soil_hum = soil_sensor -> get_humidity();
   manage_water(soil_hum);
+  manage_light();
   print_data_on_lcd(temp, air_hum, soil_hum);
   print_data_on_serial(temp, air_hum, soil_hum);
-  manage_light();
-  delay(DELTA_DELAY);
+  delay(ONE_MINUTE);
 }
 
 /**
@@ -126,8 +108,9 @@ void loop()
  */
 void print_data_on_lcd(float temp, float air_hum, int soil_hum)
 {
+  lcd.clear();
   lcd.setCursor(0, 0);
-  lcd.print("T:");
+  lcd.print("Temp:");
   if(isnan(temp))
   {
     lcd.print("ERR");
@@ -136,12 +119,8 @@ void print_data_on_lcd(float temp, float air_hum, int soil_hum)
   {
     lcd.print(round(temp));
     lcd.print("C");
-    if(temp < MIN_TEMP || temp > MAX_TEMP)
-    {
-      lcd.print(" x");
-    }
   }
-  lcd.print("  H:");
+  lcd.print(" Hum:");
   if(isnan(air_hum))
   {
     lcd.print("ERR");
@@ -150,34 +129,43 @@ void print_data_on_lcd(float temp, float air_hum, int soil_hum)
   {
     lcd.print(round(air_hum));
     lcd.print("%");
-    if(air_hum < MIN_HUM || air_hum > MAX_HUM)
-    {
-      lcd.print(" x");
-    }
   }
-
-  lcd.setCursor(0, 1);
-  lcd.print("S:");
-  lcd.print(soil_hum);
+  lcd.setCursor(0, 2);
+  lcd.print("Soil:");
+  lcd.print(soilHumidityMapped(soil_hum));
   lcd.print("%");
-  lcd.print(" M:");
-  if(flowering_state)
-  {
-    lcd.print("F");
-  }
-  else
-  {
-    lcd.print("V");
-  }
-
-  lcd.print(" L:");
+  lcd.print(" (");
+  lcd.print(soil_hum);
+  lcd.print(")");
+  lcd.setCursor(0, 3);
   if(night_mode)
   {
-    lcd.print("N");
+    lcd.print("OFF ");
+  }else
+  {
+    lcd.print("ON ");
+  }
+  lcd.print(": ");
+  if(last_check_light_minutes/60 > 0)
+  {
+    lcd.print(last_check_light_minutes / 60);
+    lcd.print("h");
+  }
+  lcd.print(last_check_light_minutes % 60);
+  lcd.print("m / ");
+  if(night_mode)
+  {
+    lcd.print(night_hours);
+    lcd.print("h");
+    lcd.print(night_minutes);
+    lcd.print("m");
   }
   else
   {
-    lcd.print("D");
+    lcd.print(day_hours);
+    lcd.print("h");
+    lcd.print(day_minutes);
+    lcd.print("m");
   }
 }
 
@@ -207,9 +195,12 @@ void print_data_on_serial(float temp, float air_hum, int soil_hum)
     Serial.print(air_hum);
     Serial.print("%");
   }
-  Serial.print("\nSoil Humidity: ");
-  Serial.print(soil_hum);
+  Serial.print("\nSoil:");
+  Serial.print(soilHumidityMapped(soil_hum));
   Serial.print("%");
+  Serial.print(" (");
+  Serial.print(soil_hum);
+  Serial.print(")");
 
   Serial.print("\nLights: ");
   if(flowering_state)
@@ -220,6 +211,13 @@ void print_data_on_serial(float temp, float air_hum, int soil_hum)
   {
     Serial.print("V");
   }
+  Serial.print("\nNight Mode: ");
+  if(night_mode){
+    Serial.print("true");
+  }else{
+    Serial.print("false");
+  }
+  
 }
 
 /**
@@ -242,56 +240,61 @@ void manage_water(int soil_hum)
  */
 void manage_light()
 {
-  state_check_change();
-  check_light_mode();
+  swap_light_mode_if_needed();
   if(night_mode){
     strip_led->off();
   } else {
     strip_led->on();
   }
-
 }
 
-void check_light_mode()
+void update_light()
 {
+  last_check_light_millis = millis();
+  change_light();
+}
+
+
+void swap_light_mode_if_needed()
+{
+ 
   if(night_mode) //NIGHT MODE
   {
+    last_check_light_minutes = (millis() - last_time_day) / ONE_MINUTE;
     if(millis() - last_check_light_millis > actual_night_time){
-      last_check_light_millis = millis();
-      night_mode = 0;
+      update_light();
     }
   }
   else //DAY MODE
   {
+      last_check_light_minutes = (millis() - last_time_night) / ONE_MINUTE;
      if(millis() - last_check_light_millis > actual_day_time){
-      last_check_light_millis = millis();
-      night_mode = 1;
+      update_light();
     }
   }
 }
 
-/**
- * Check if the button was pressed. Change the day & night millisecond values if so.
- */
-void state_check_change()
+void change_light()
 {
-  if(flowering_state)
-  {
-    actual_day_time = FLOWERING_DAY;
-    actual_night_time = FLOWERING_NIGHT;
-  } else{
-    actual_day_time = VEGETATIVE_DAY;
-    actual_night_time = VEGETATIVE_NIGHT;
+  Serial.print("Change Light Called");
+  if(millis() - last_time_pressed > BOUNCING_DELAY){
+    last_time_pressed = millis();
+    night_mode = !night_mode;
+    last_time_day = millis();
+    last_time_night = millis();
+
   }
 }
 
-/**
- * INTERRUPT FUNCTION CALLED WHEN BUTTON IS PRESSED
- */
-void set_light_state()
+int soilHumidityMapped(int analog_value)
 {
-  if(millis() - last_time_pressed > BOUNCING_DELAY){
-    flowering_state = !flowering_state;
-    last_time_pressed = millis();
-  }  
+    int soilMoistureValue = map(analog_value , WET_VALUE, DRY_VALUE, 100, 0);
+    if(soilMoistureValue > 100){
+      soilMoistureValue = 100;
+    }
+    else if(soilMoistureValue < 0)
+    {
+      soilMoistureValue = 0;
+    }
+    return soilMoistureValue;
 }

@@ -1,7 +1,7 @@
 #include <Arduino.h>
 #include "WaterPump.h"
 
-#define DELTA_WATER 5000
+#define DELTA_WATER 3000
 
 //constructor: selected_pin(pin number where component is wired)
 WaterPump::WaterPump(char selected_pin) : HwComponent(selected_pin){}
